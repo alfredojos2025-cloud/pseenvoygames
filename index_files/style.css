@@ -1,0 +1,79 @@
+/*
+ Theme Name:   Woodmart Child
+ Description:  Woodmart Child Theme
+ Author:       XTemos
+ Author URI:   http://xtemos.com
+ Template:     woodmart
+ Version:      1.0.0
+ Text Domain:  woodmart
+*/
+
+@media (max-width: 1024px) {
+	.woocommerce-shop .wd-col-offcanvas-md-sm:not(.wd-side-hidden):not(.wd-opened),
+	.woocommerce-shop .wd-col-offcanvas-sm:not(.wd-side-hidden):not(.wd-opened),
+	.tax-product_cat .wd-col-offcanvas-md-sm:not(.wd-side-hidden):not(.wd-opened),
+	.tax-product_cat .wd-col-offcanvas-sm:not(.wd-side-hidden):not(.wd-opened) {
+		display: none;
+	}
+
+	.woocommerce-shop .wd-col-offcanvas-md-sm.wd-side-hidden,
+	.woocommerce-shop .wd-col-offcanvas-sm.wd-side-hidden,
+	.tax-product_cat .wd-col-offcanvas-md-sm.wd-side-hidden,
+	.tax-product_cat .wd-col-offcanvas-sm.wd-side-hidden {
+		--wd-side-hidden-w: min(340px, calc(100vw - 48px));
+		flex-direction: column;
+		flex-wrap: nowrap;
+		align-items: stretch;
+	}
+
+	.woocommerce-shop .wd-col-offcanvas-md-sm.wd-opened,
+	.woocommerce-shop .wd-col-offcanvas-sm.wd-opened,
+	.tax-product_cat .wd-col-offcanvas-md-sm.wd-opened,
+	.tax-product_cat .wd-col-offcanvas-sm.wd-opened {
+		display: flex;
+		flex-direction: column;
+		flex-wrap: nowrap;
+		align-items: stretch;
+		overflow-x: hidden;
+	}
+
+	.woocommerce-shop .wd-col-offcanvas-md-sm > .wd-heading,
+	.woocommerce-shop .wd-col-offcanvas-sm > .wd-heading,
+	.tax-product_cat .wd-col-offcanvas-md-sm > .wd-heading,
+	.tax-product_cat .wd-col-offcanvas-sm > .wd-heading {
+		flex: 0 0 auto;
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+		box-sizing: border-box;
+	}
+
+	.woocommerce-shop .wd-col-offcanvas-md-sm > .elementor-widget-wd_sidebar,
+	.woocommerce-shop .wd-col-offcanvas-sm > .elementor-widget-wd_sidebar,
+	.tax-product_cat .wd-col-offcanvas-md-sm > .elementor-widget-wd_sidebar,
+	.tax-product_cat .wd-col-offcanvas-sm > .elementor-widget-wd_sidebar {
+		flex: 1 1 auto;
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+		box-sizing: border-box;
+		overflow-x: hidden;
+	}
+
+	.woocommerce-shop .wd-col-offcanvas-md-sm .elementor-widget-container,
+	.woocommerce-shop .wd-col-offcanvas-sm .elementor-widget-container,
+	.tax-product_cat .wd-col-offcanvas-md-sm .elementor-widget-container,
+	.tax-product_cat .wd-col-offcanvas-sm .elementor-widget-container {
+		width: 100%;
+		max-width: 100%;
+		box-sizing: border-box;
+	}
+
+	.woocommerce-shop .wd-col-offcanvas-md-sm .price_label,
+	.woocommerce-shop .wd-col-offcanvas-sm .price_label,
+	.tax-product_cat .wd-col-offcanvas-md-sm .price_label,
+	.tax-product_cat .wd-col-offcanvas-sm .price_label {
+		white-space: normal;
+		line-height: 1.4;
+	}
+}
