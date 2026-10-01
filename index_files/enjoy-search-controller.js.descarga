@@ -1,0 +1,365 @@
+(function (root, factory) {
+  "use strict";
+
+  if (typeof module === "object" && module.exports) {
+    module.exports = factory();
+    return;
+  }
+
+  root.EnjoySearchController = factory();
+})(typeof globalThis !== "undefined" ? globalThis : window, function () {
+  "use strict";
+
+  function normalizeQuery(value) {
+    return String(value == null ? "" : value)
+      .trim()
+      .replace(/\s+/gu, " ")
+      .toLocaleLowerCase();
+  }
+
+  class LruTtlCache {
+    constructor(limit, ttlMs, now) {
+      this.limit = Math.max(1, Number(limit) || 1);
+      this.ttlMs = Math.max(1, Number(ttlMs) || 1);
+      this.now = typeof now === "function" ? now : Date.now;
+      this.entries = new Map();
+    }
+
+    get size() {
+      this.prune();
+      return this.entries.size;
+    }
+
+    get(key) {
+      const entry = this.entries.get(key);
+      if (!entry) {
+        return null;
+      }
+      if (entry.expiresAt <= this.now()) {
+        this.entries.delete(key);
+        return null;
+      }
+      this.entries.delete(key);
+      this.entries.set(key, entry);
+      return entry.value;
+    }
+
+    set(key, value) {
+      this.entries.delete(key);
+      this.entries.set(key, {
+        expiresAt: this.now() + this.ttlMs,
+        value,
+      });
+      this.prune();
+      while (this.entries.size > this.limit) {
+        this.entries.delete(this.entries.keys().next().value);
+      }
+    }
+
+    prune() {
+      const now = this.now();
+      for (const [key, entry] of this.entries) {
+        if (entry.expiresAt <= now) {
+          this.entries.delete(key);
+        }
+      }
+    }
+  }
+
+  function createSearchController(configuration) {
+    const config = {
+      minimum: Number(configuration.minimum) || 4,
+      maximum: Number(configuration.maximum) || 64,
+      maxTokens: Number(configuration.maxTokens) || 6,
+      debounceMs: Number(configuration.debounceMs) || 900,
+      cacheTtlMs: Number(configuration.cacheTtlMs) || 120000,
+      cacheLimit: Number(configuration.cacheLimit) || 50,
+      contextToken: String(configuration.contextToken || ""),
+    };
+    const cache = new LruTtlCache(
+      config.cacheLimit,
+      config.cacheTtlMs,
+      configuration.now,
+    );
+
+    function isValid(query) {
+      const length = Array.from(query).length;
+      const tokens = query ? query.split(/\s+/u) : [];
+      return (
+        length >= config.minimum &&
+        length <= config.maximum &&
+        tokens.length <= config.maxTokens
+      );
+    }
+
+    function cacheKey(query, options) {
+      return [
+        config.contextToken,
+        normalizeQuery(query),
+        Math.min(8, Math.max(1, Number(options.number) || 8)),
+        String(options.category || ""),
+      ].join("|");
+    }
+
+    function sanitizeServiceUrl(serviceUrl) {
+      if (typeof serviceUrl !== "string" || !serviceUrl) {
+        return serviceUrl;
+      }
+      try {
+        const base =
+          typeof window !== "undefined" && window.location
+            ? window.location.origin
+            : "https://example.invalid";
+        const url = new URL(serviceUrl, base);
+        for (const name of [
+          "include_cat_search",
+          "number",
+          "post_type",
+          "product_cat",
+          "enjoy_ctx",
+        ]) {
+          url.searchParams.delete(name);
+        }
+        return serviceUrl.startsWith("http")
+          ? url.toString()
+          : `${url.pathname}${url.search}`;
+      } catch (_error) {
+        return serviceUrl.replace(
+          /([?&])include_cat_search=[^&]*&?/u,
+          "$1",
+        );
+      }
+    }
+
+    function attachInstance(instance, options) {
+      if (!instance || instance.__enjoySearchGuard) {
+        return Boolean(instance && instance.__enjoySearchGuard);
+      }
+      const required = [
+        "abortAjax",
+        "setOptions",
+        "getSuggestions",
+        "processResponse",
+        "hide",
+      ];
+      if (required.some((method) => typeof instance[method] !== "function")) {
+        if (instance && typeof instance.disable === "function") {
+          instance.disable();
+        }
+        return false;
+      }
+
+      const bounded = {
+        category: String(options.category || ""),
+        number: Math.min(8, Math.max(1, Number(options.number) || 8)),
+      };
+      const originalGetSuggestions = instance.getSuggestions.bind(instance);
+      const originalProcessResponse = instance.processResponse.bind(instance);
+      const originalError =
+        typeof instance.options.onSearchError === "function"
+          ? instance.options.onSearchError
+          : function () {};
+      const originalTransform =
+        typeof instance.options.transformResult === "function"
+          ? instance.options.transformResult
+          : function (value) {
+              return typeof value === "string" ? JSON.parse(value) : value;
+            };
+      let activeQuery = null;
+
+      instance.setOptions({
+        minChars: config.minimum,
+        deferRequestBy: config.debounceMs,
+        type: "GET",
+        noCache: true,
+        serviceUrl: sanitizeServiceUrl(instance.options.serviceUrl),
+        params: {
+          ...(instance.options.params || {}),
+          post_type: "product",
+          number: bounded.number,
+          enjoy_ctx: config.contextToken,
+          ...(bounded.category ? { product_cat: bounded.category } : {}),
+        },
+        transformResult(value, query) {
+          if (value === "" || value == null) {
+            return { suggestions: [] };
+          }
+          return originalTransform(value, query);
+        },
+        onSearchError(element, xhr, status, error) {
+          activeQuery = null;
+          instance.hide();
+          return originalError.call(this, element, xhr, status, error);
+        },
+      });
+
+      instance.getSuggestions = function (sourceQuery) {
+        const query = normalizeQuery(sourceQuery);
+        if (!isValid(query)) {
+          activeQuery = null;
+          instance.abortAjax();
+          instance.hide();
+          return;
+        }
+
+        const key = cacheKey(query, bounded);
+        const cached = cache.get(key);
+        if (cached && Array.isArray(cached.suggestions)) {
+          activeQuery = null;
+          instance.suggestions = cached.suggestions;
+          instance.suggest();
+          instance.options.onSearchComplete.call(
+            instance.element,
+            sourceQuery,
+            cached.suggestions,
+          );
+          return;
+        }
+
+        if (activeQuery === query && instance.currentRequest) {
+          return;
+        }
+        if (activeQuery !== null && activeQuery !== query) {
+          instance.abortAjax();
+        }
+        activeQuery = query;
+        originalGetSuggestions(query);
+      };
+
+      instance.processResponse = function (response, transportQuery, requestKey) {
+        const query = normalizeQuery(transportQuery);
+        if (
+          !response ||
+          !Array.isArray(response.suggestions) ||
+          response.suggestions.length > 8
+        ) {
+          activeQuery = null;
+          instance.hide();
+          return;
+        }
+
+        cache.set(cacheKey(query, bounded), {
+          suggestions: response.suggestions,
+        });
+        activeQuery = null;
+        const displayQuery =
+          typeof instance.getQuery === "function"
+            ? instance.getQuery(instance.currentValue)
+            : transportQuery;
+        originalProcessResponse(response, displayQuery, requestKey);
+      };
+
+      instance.__enjoySearchGuard = true;
+      return true;
+    }
+
+    function canSubmit(value) {
+      return normalizeQuery(value).length >= config.minimum;
+    }
+
+    function attachForm(form, jquery) {
+      if (!form) {
+        return;
+      }
+      const input = form.querySelector(
+        'input[type="search"], input[type="text"]',
+      );
+      if (!input) {
+        return;
+      }
+
+      const categoryField = form.querySelector('[name="product_cat"]');
+      const instance =
+        jquery && jquery.fn && typeof jquery.fn.devbridgeAutocomplete === "function"
+          ? jquery(input).devbridgeAutocomplete()
+          : null;
+      if (instance) {
+        attachInstance(instance, {
+          category: categoryField ? categoryField.value : "",
+          number: 8,
+        });
+      }
+
+      if (!form.__enjoySearchFormGuard) {
+        form.dataset.symbols_count = String(config.minimum);
+        form.dataset.count = "8";
+        form.dataset.include_cat_search = "no";
+        form.dataset.sku = "1";
+        input.setAttribute("minlength", String(config.minimum));
+        input.setAttribute("maxlength", String(config.maximum));
+        form.addEventListener("submit", function (event) {
+          if (canSubmit(input.value)) {
+            input.setCustomValidity("");
+            return;
+          }
+          event.preventDefault();
+          input.setCustomValidity(
+            `Escribe al menos ${config.minimum} caracteres.`,
+          );
+          input.reportValidity();
+        });
+        let attachScheduled = false;
+        input.addEventListener("input", function () {
+          if (attachScheduled) {
+            return;
+          }
+          attachScheduled = true;
+          setTimeout(function () {
+            attachScheduled = false;
+            attachForm(form, jquery);
+          }, 0);
+        });
+        form.__enjoySearchFormGuard = true;
+      }
+    }
+
+    function boot(documentObject, jquery) {
+      if (
+        typeof globalThis !== "undefined" &&
+        globalThis.woodmart_settings
+      ) {
+        globalThis.woodmart_settings.ajax_search_delay = String(
+          config.debounceMs,
+        );
+      }
+      const scan = function () {
+        documentObject
+          .querySelectorAll("form.woodmart-ajax-search")
+          .forEach((form) => attachForm(form, jquery));
+      };
+      scan();
+      documentObject.addEventListener(
+        "focusin",
+        function (event) {
+          if (event.target.closest("form.woodmart-ajax-search")) {
+            setTimeout(scan, 0);
+          }
+        },
+        true,
+      );
+      if (jquery) {
+        jquery(documentObject).on(
+          "wdHeaderBuilderInited wdShopPageInit wdUpdatedHeader",
+          scan,
+        );
+      }
+      setTimeout(scan, 0);
+      setTimeout(scan, config.debounceMs);
+    }
+
+    return {
+      attachForm,
+      attachInstance,
+      boot,
+      cache,
+      canSubmit,
+      isValid,
+    };
+  }
+
+  return {
+    LruTtlCache,
+    createSearchController,
+    normalizeQuery,
+  };
+});

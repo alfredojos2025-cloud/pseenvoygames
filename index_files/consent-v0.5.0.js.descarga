@@ -1,0 +1,144 @@
+(function (root) {
+  'use strict';
+
+  const NAME = 'enjoy_consent';
+  const UNKNOWN = Object.freeze({ statistics: 'unknown', marketing: 'unknown' });
+
+  function parsePreferences(header) {
+    const values = String(header || '').split(';').map(part => part.trim())
+      .filter(part => part.startsWith(NAME + '='));
+    if (values.length !== 1) return { ...UNKNOWN };
+    const match = /^enjoy_consent=v2\.s([01])m([01])$/.exec(values[0]);
+    if (!match) return { ...UNKNOWN };
+    return {
+      statistics: match[1] === '1' ? 'granted' : 'denied',
+      marketing: match[2] === '1' ? 'granted' : 'denied',
+    };
+  }
+
+  function clearCookies(doc, secure, matches) {
+    const visible = String(doc.cookie || '').split(';').map(part => part.trim());
+    const labels = String(doc.location?.hostname || '').split('.').filter(Boolean);
+    const domains = [];
+    for (let index = 0; index <= labels.length - 3; index++) {
+      domains.push(labels.slice(index).join('.'));
+    }
+    for (const part of visible) {
+      const name = part.split('=', 1)[0];
+      if (!matches(name)) continue;
+      const base = name + '=; Max-Age=0; Path=/; ';
+      const flags = 'SameSite=Lax' + (secure ? '; Secure' : '');
+      doc.cookie = base + flags;
+      for (const domain of domains) doc.cookie = base + 'Domain=' + domain + '; ' + flags;
+    }
+  }
+
+  function clearMarketingCookies(doc, secure) {
+    clearCookies(doc, secure, name => name === '_fbp' || name === '_fbc');
+  }
+
+  function clearStatisticsCookies(doc, secure) {
+    clearCookies(doc, secure, name => name === 'enjoy_ga4_cart_pending'
+      || /^_ga(?:_|$)/.test(name) || /^_g(?:id|at)(?:_|$)/.test(name));
+  }
+
+  function createConsentStore(doc, secure) {
+    return {
+      readPreferences: () => parsePreferences(doc.cookie),
+      read: () => parsePreferences(doc.cookie).statistics,
+      readMarketing: () => parsePreferences(doc.cookie).marketing,
+      clearMarketingCookies: () => clearMarketingCookies(doc, secure),
+      clearStatisticsCookies: () => clearStatisticsCookies(doc, secure),
+      choosePreferences(statistics, marketing) {
+        if (!['granted', 'denied'].includes(statistics) || !['granted', 'denied'].includes(marketing)) return false;
+        const value = `v2.s${statistics === 'granted' ? '1' : '0'}m${marketing === 'granted' ? '1' : '0'}`;
+        try {
+          doc.cookie = NAME + '=' + value + '; Max-Age=5184000; Path=/; SameSite=Lax' + (secure ? '; Secure' : '');
+          const saved = parsePreferences(doc.cookie);
+          const success = saved.statistics === statistics && saved.marketing === marketing;
+          if (success && marketing === 'denied') clearMarketingCookies(doc, secure);
+          if (success && statistics === 'denied') clearStatisticsCookies(doc, secure);
+          return success;
+        } catch (_error) {
+          return false;
+        }
+      },
+    };
+  }
+
+  function mountConsentUI(doc, store, reload) {
+    const get = suffix => doc.getElementById('enjoy-consent-' + suffix);
+    const banner = get('banner');
+    const accept = get('accept');
+    const reject = get('reject');
+    const configure = get('configure');
+    const panel = get('panel');
+    const save = get('save');
+    const preferences = get('preferences');
+    const statistics = get('statistics');
+    const marketing = get('marketing');
+    if (![banner, accept, reject, configure, panel, save, statistics, marketing].every(Boolean)) return false;
+    if (store.readPreferences().marketing !== 'granted' && typeof store.clearMarketingCookies === 'function') {
+      store.clearMarketingCookies();
+    }
+    if (store.readPreferences().statistics !== 'granted' && typeof store.clearStatisticsCookies === 'function') {
+      store.clearStatisticsCookies();
+    }
+
+    const refresh = () => {
+      const choice = store.readPreferences();
+      statistics.checked = choice.statistics === 'granted';
+      marketing.checked = choice.marketing === 'granted';
+    };
+    const commit = (stats, ads) => {
+      if (!store.choosePreferences(stats, ads)) return;
+      banner.hidden = true;
+      if (preferences) preferences.hidden = false;
+      if (preferences && typeof preferences.focus === 'function') preferences.focus();
+      if (typeof reload === 'function') reload();
+    };
+    banner.hidden = store.read() !== 'unknown';
+    if (preferences) preferences.hidden = !banner.hidden;
+    panel.hidden = true;
+    accept.addEventListener('click', event => {
+      event.preventDefault();
+      commit('granted', 'granted');
+    });
+    reject.addEventListener('click', event => {
+      event.preventDefault();
+      commit('denied', 'denied');
+    });
+    configure.addEventListener('click', event => {
+      event.preventDefault();
+      refresh();
+      panel.hidden = false;
+      if (typeof panel.focus === 'function') panel.focus();
+    });
+    save.addEventListener('click', event => {
+      event.preventDefault();
+      commit(statistics.checked ? 'granted' : 'denied', marketing.checked ? 'granted' : 'denied');
+    });
+    if (preferences) {
+      preferences.addEventListener('click', event => {
+        event.preventDefault();
+        panel.hidden = true;
+        banner.hidden = false;
+        if (typeof banner.focus === 'function') banner.focus();
+      });
+    }
+    return true;
+  }
+
+  const api = { parsePreferences, createConsentStore, mountConsentUI };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) {
+    root.EnjoyConsent = api;
+    if (root.document) {
+      const start = () => mountConsentUI(root.document,
+        createConsentStore(root.document, root.location.protocol === 'https:'),
+        () => root.location.reload());
+      if (root.document.readyState === 'loading') root.document.addEventListener('DOMContentLoaded', start);
+      else start();
+    }
+  }
+})(typeof window === 'undefined' ? undefined : window);
